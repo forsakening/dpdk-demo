@@ -822,18 +822,18 @@ static void fwd_main_loop(void)
 		/*
 		 * TX burst queue drain
 		 */
-		cur_tsc = rte_rdtsc();
-		diff_tsc = cur_tsc - prev_tsc;
-		if (unlikely(diff_tsc > drain_tsc)) 
-		{
-			for (i = 0; i < dpdk_init_cfg.port_num; i++) 
-			{   
-				buffer = tx_buffer[user_core_id][i];
-			    dpdk_port_id = user_dpdk_port_id_map[i];
-                dpdk_eth_tx_buffer_flush(dpdk_port_id, user_core_id, buffer);
-			}
-			prev_tsc = cur_tsc;
-		}
+		//cur_tsc = rte_rdtsc();
+		//diff_tsc = cur_tsc - prev_tsc;
+		//if (unlikely(diff_tsc > drain_tsc)) 
+		//{
+		//	for (i = 0; i < dpdk_init_cfg.port_num; i++) 
+		//	{   
+		//		buffer = tx_buffer[user_core_id][i];
+		//	    dpdk_port_id = user_dpdk_port_id_map[i];
+        //        dpdk_eth_tx_buffer_flush(dpdk_port_id, user_core_id, buffer);
+		//	}
+		//	prev_tsc = cur_tsc;
+		//}
 		
 
         /*
@@ -885,23 +885,23 @@ static void fwd_main_loop(void)
             /*
              * send pkts per que
              */
-            ret = rte_ring_dequeue_burst(pkt_send_ring[user_core_id][que_id], (void **)pkts_info_burst, MAX_PKT_BURST);
-            for(j = 0; j < ret; j++)
-            {
-                mbuf = (struct rte_mbuf *)(pkts_info_burst[j]->pmbuf);
-                rte_pktmbuf_pkt_len(mbuf)  = pkts_info_burst[j]->pkt_len;
-                rte_pktmbuf_data_len(mbuf) = pkts_info_burst[j]->pkt_len;
+            //ret = rte_ring_dequeue_burst(pkt_send_ring[user_core_id][que_id], (void **)pkts_info_burst, MAX_PKT_BURST);
+            //for(j = 0; j < ret; j++)
+            //{
+            //    mbuf = (struct rte_mbuf *)(pkts_info_burst[j]->pmbuf);
+            //    rte_pktmbuf_pkt_len(mbuf)  = pkts_info_burst[j]->pkt_len;
+            //    rte_pktmbuf_data_len(mbuf) = pkts_info_burst[j]->pkt_len;
                 
-                if(DPDK_ACCEPT == pkts_info_burst[j]->drop_flag)
-                {
-                    user_port_id = pkts_info_burst[j]->port_out;
-                    dpdk_simple_forward(mbuf, user_port_id, user_core_id);
-                }
-                else
-                {
-                    rte_pktmbuf_free(mbuf);
-                }
-            }
+            //    if(DPDK_ACCEPT == pkts_info_burst[j]->drop_flag)
+            //    {
+            //        user_port_id = pkts_info_burst[j]->port_out;
+            //        dpdk_simple_forward(mbuf, user_port_id, user_core_id);
+            //    }
+            //    else
+            //    {
+            //        rte_pktmbuf_free(mbuf);
+            //    }
+            //}
         }
 	}
 }
@@ -1003,11 +1003,8 @@ int dpdk_recv_pkt(int thread_id,  struct dpdk_pkt_info **recv_pkt)
         return DPDK_R_ERR;
 
     app_thread_statistics[thread_id].rcv_packets++;
-    
     return DPDK_R_OK;
 }
-
-
 
 void dpdk_send_pkt(int thread_id, int port_id, struct dpdk_pkt_info *send_pkt)
 {
@@ -1019,11 +1016,22 @@ void dpdk_send_pkt(int thread_id, int port_id, struct dpdk_pkt_info *send_pkt)
     }
         
     send_pkt->port_out = port_id;
-    while(DPDK_R_OK != rte_ring_enqueue(pkt_send_ring[send_pkt->core_id][thread_id],send_pkt))
-    {
-        printf("pkt_send_ring is full.\n");
-    }
+	struct rte_mbuf *mbuf = (struct rte_mbuf *)(send_pkt->pmbuf);
+    rte_pktmbuf_pkt_len(mbuf)  = send_pkt->pkt_len;
+    rte_pktmbuf_data_len(mbuf) = send_pkt->pkt_len;
 
+	//send at now
+	uint32_t ret = 0;
+	do
+	{
+		ret = rte_eth_tx_burst(port_id, send_pkt->core_id, &mbuf, 1);
+	}while (1 != ret);
+	
+	//while(DPDK_R_OK != rte_ring_enqueue(pkt_send_ring[send_pkt->core_id][thread_id],send_pkt))
+    //{
+    //    printf("pkt_send_ring is full.\n");
+    //}
+	
     app_thread_statistics[thread_id].snd_packets++;
     
     return;
@@ -1040,10 +1048,13 @@ void dpdk_drop_pkt(int thread_id, struct dpdk_pkt_info *ppkt)
     }
 
     ppkt->drop_flag = DPDK_DROP;
-    while(DPDK_R_OK != rte_ring_enqueue(pkt_send_ring[ppkt->core_id][thread_id],ppkt))
-    {
-        printf("pkt_send_ring is full.\n");
-    }
+	if (NULL == ppkt->pmbuf)
+		return;
+	rte_pktmbuf_free(ppkt->pmbuf);
+	//while(DPDK_R_OK != rte_ring_enqueue(pkt_send_ring[ppkt->core_id][thread_id],ppkt))
+    //{
+    //    printf("pkt_send_ring is full.\n");
+    //}
     
     app_thread_statistics[thread_id].drp_packets++;
     
