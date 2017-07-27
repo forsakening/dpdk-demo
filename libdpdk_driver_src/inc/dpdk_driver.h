@@ -3,9 +3,9 @@
 #include <stdint.h>
 
 #define DPDK_MAX_PORT_NUM 32           /*dpdk收发接口支持的最大端口数*/
-#define DPDK_MAX_CORE_NUM 32           /*dpdk收发接口可启用的最大cpu核数*/
-#define DPDK_MAX_APP_THREAD_NUM 32     /*上层应用可启用的最大报文处理线程数*/
-
+#define DPDK_MAX_CORE_NUM 64           /*dpdk收发接口可启用的最大cpu核数*/
+#define DPDK_MAX_APP_THREAD_NUM 64     /*上层应用可启用的最大报文处理线程数*/
+#define DPDK_MAX_QUE_NUM  32           /*每个网卡可以使用的最大队列数目*/
 
 
 #define __dpdk_cache_aligned __attribute__((__aligned__(64)))
@@ -38,12 +38,25 @@ struct dpdk_app_thread_statistics {
 
 /*dpdk收发接口初始化信息结构*/
 struct dpdk_init_para{
-    uint64_t cache_pkt_num;                             /*报文缓存个数*/
-    uint8_t  core_num;                                  /*启用cpu核心个数*/
     uint8_t  port_num;                                  /*启用端口个数*/
-    uint8_t  thread_num;                                /*应用层启用报文处理线程个数*/
-    uint8_t  core_arr[DPDK_MAX_CORE_NUM];               /*cpu核心信息数组*/
-    uint8_t  port_arr[DPDK_MAX_PORT_NUM][6];            /*端口mac信息数组*/
+	uint8_t  core_num;                                  /*启用CPU个数*/
+	uint8_t  core_arr[DPDK_MAX_CORE_NUM];               /*cpu核心信息数组*/
+}__dpdk_cache_aligned;
+
+
+struct dpdk_port_conf{
+	uint8_t  mode;									
+	uint8_t  mac_addr[6];								/*端口mac信息*/
+	uint8_t  rx_que_num;								/*端口使用的收队列数目，和其对应的上层应用线程数目相等*/
+    uint8_t  tx_que_num;                                /*端口使用的发队列数目，和其对应的上层应用线程数目相等*/	
+	uint8_t  rx_core_num;								/*端口使用几个cpu核心进行收包*/
+	uint8_t  rx_core_arr[DPDK_MAX_CORE_NUM];			/*cpu核心信息数组*/
+	uint8_t  tx_core_num;								/*端口使用几个cpu核心进行发包*/
+	uint8_t  tx_core_arr[DPDK_MAX_CORE_NUM];			/*cpu核心信息数组*/
+	uint32_t cache_pkt_num;								/*端口可以缓存报文的个数*/
+	void*	 mbuf_pool[DPDK_MAX_QUE_NUM];				/*用于保存其收包内存池*/
+	void*    r_ring[DPDK_MAX_QUE_NUM];					/*用于将收到的报文MBUF指针存在ring中，各个队列一个*/
+	void*    t_ring[DPDK_MAX_QUE_NUM];					/*发包队列*/
 }__dpdk_cache_aligned;
 
 /*报文描述信息结构*/
@@ -67,7 +80,7 @@ struct dpdk_pkt_info {
 * 输出：无
 * 返回值：成功返回0，失败返回-1。
 *********************************************************************************/
-int dpdk_nic_init(struct dpdk_init_para *init_para);
+int dpdk_nic_init(const char* file_path, struct dpdk_init_para* init_para);
 
 /*********************************************************************************
 * 函数名称：dpdk_recv_pkt
@@ -78,8 +91,7 @@ int dpdk_nic_init(struct dpdk_init_para *init_para);
 *      recv_pkt： 报文描述信息指针。
 * 返回值：成功返回0，失败返回-1。
 *********************************************************************************/
-int dpdk_recv_pkt(int thread_id,  struct dpdk_pkt_info **recv_pkt);
-
+int	dpdk_recv_pkt(int port_id, int que_id,  struct dpdk_pkt_info **recv_pkt);
 
 
 /*********************************************************************************
@@ -92,7 +104,7 @@ int dpdk_recv_pkt(int thread_id,  struct dpdk_pkt_info **recv_pkt);
 * 输出：无
 * 返回值：无
 *********************************************************************************/
-void dpdk_send_pkt(int thread_id, int port_id, struct dpdk_pkt_info *send_pkt);
+int dpdk_send_pkt(int port_id, int que_id, struct dpdk_pkt_info *send_pkt);
 
 
 /*********************************************************************************
@@ -104,7 +116,7 @@ void dpdk_send_pkt(int thread_id, int port_id, struct dpdk_pkt_info *send_pkt);
 * 输出：无
 * 返回值：无
 *********************************************************************************/
-void dpdk_drop_pkt(int thread_id, struct dpdk_pkt_info *ppkt);
+void dpdk_drop_pkt(struct dpdk_pkt_info *ppkt);
 
 /*********************************************************************************
 * 函数名称：dpdk_get_sendbuf
@@ -115,7 +127,7 @@ void dpdk_drop_pkt(int thread_id, struct dpdk_pkt_info *ppkt);
 *      ppkt： 报文描述信息指针。
 * 返回值：成功返回0，失败返回-1。
 *********************************************************************************/
-int dpdk_get_sendbuf(int thread_id, struct dpdk_pkt_info **ppkt);
+int dpdk_get_sendbuf(struct dpdk_pkt_info **ppkt);
 
 
 /*********************************************************************************
@@ -135,6 +147,7 @@ void dpdk_get_nic_port_statistics(int port_id, struct dpdk_nic_port_statistics *
 * 输出：    app_thread_stats: 统计值结构体
 * 返回值：  无
 *********************************************************************************/
+//deprec
 void dpdk_get_app_thread_statistics(int thread_id, struct dpdk_app_thread_statistics *app_thread_stats);
 
 

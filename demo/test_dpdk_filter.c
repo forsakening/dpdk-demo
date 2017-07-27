@@ -9,21 +9,20 @@
 #include "ip_filter.h"
 #include "dpdk_driver.h"
 
+//每个线程从哪里取数据，从哪里发数据定义
+typedef struct
+{
+	int rx_port_id;
+	int rx_port_que_id;
+	int tx_port_id;
+	int tx_port_que_id;
+	int thread_id;
+}THREAD_PORT_INFO;
+
 //上层业务测试时相关参数
 static int app_thread_cnt = 1;     //上层并行处理线程数目
-static int app_thread_coreid[] = {3}; //上层每个线程绑定的核id
-static int app_thread_idx[32];
-
-//dpdk 测试时相关参数
-static struct dpdk_init_para dpdk_para;  //DPDK参数
-static int dpdk_pkt_buf_num = 1000;   //DPDK缓存池能够缓存的报文数目
-//dpdk使用的核心id
-static int dpdk_core_id_0 = 1;
-//测试时候使用的mac 地址，2收1发
-//static int recv_port_id_0 = 0;           //收
-//static int recv_port_id_1 = 1;           //收
-static int send_port_id_0 = 0;           //发
-static unsigned char dpdk_mac_0[6] = {0x00,0x0c,0x29,0x8d,0x3a,0xee};           //收         
+static int app_thread_coreid[] = {3,3,3,3}; //上层每个线程绑定的核id
+static THREAD_PORT_INFO thread_port_info[32] = {{0}};
 	
 //ip filter 测试时相关参数
 static int ip_filter_capacity = 200000;  //ip filter表里可容纳的ip数目
@@ -39,18 +38,11 @@ typedef struct
 	uint64_t send_pkt;
 }TEST_STAT;
 static TEST_STAT test_stat[32];
-
+static struct dpdk_init_para dpdk_para = {0};
 //初始化DPDK
 int init_dpdk(void)
 {
-	dpdk_para.cache_pkt_num = dpdk_pkt_buf_num; //DPDK缓存池能够缓存的报文数目
-	dpdk_para.core_num = 1;    //dpdk使用的cpu核心数目
-	dpdk_para.port_num = 1;    //dpdk使用的网卡数目
-	dpdk_para.thread_num = app_thread_cnt;
-	dpdk_para.core_arr[0] = dpdk_core_id_0; //dpdk使用的cpu核id - 1号核心
-	memcpy(dpdk_para.port_arr[0], dpdk_mac_0, 6); //拷贝mac地址至初始化参数中
-
-	if (0 > dpdk_nic_init(&dpdk_para))
+	if (0 > dpdk_nic_init("./dpdk.cfg", &dpdk_para))
 	{
 		printf("DPDK init Error! \n");
 		return -1;
@@ -109,8 +101,13 @@ int app_deal_something()
 
 static void* app_handle_thread(void* para)
 {
-	int threadId = *((int*)para);
-	int coreId = app_thread_coreid[threadId];
+	THREAD_PORT_INFO* thread_info = (THREAD_PORT_INFO*)para;
+	int rx_port_id = thread_info->rx_port_id;
+	int rx_port_que_id = thread_info->rx_port_que_id;
+	int tx_port_id = thread_info->tx_port_id;
+	int tx_port_que_id = thread_info->tx_port_que_id;
+	int thread_id = thread_info->thread_id;
+	int coreId = app_thread_coreid[thread_id];
 	
 	//进行核心绑定
 	cpu_set_t mask;
@@ -118,47 +115,56 @@ static void* app_handle_thread(void* para)
 	CPU_SET(coreId, &mask);
 	if (pthread_setaffinity_np(pthread_self(), sizeof(mask), &mask) < 0)
 	{
-		printf("Handle ThreadID:%d bind to Core:%d Error !\n", threadId, coreId);
+		printf("Handle ThreadID:%d bind to Core:%d Error !\n", thread_id, coreId);
 		return NULL;
 	}
 	
-	printf("Start Handle Thread, ThreadID:%d bind to Core:%d !\n", threadId, coreId);
+	printf("Start Handle Thread, ThreadID:%d bind to Core:%d !\n", thread_id, coreId);
 
 	//进行业务处理
 	//1)从驱动收报文;
 	//2)调用接口进行匹配;
 	//3)进行报文的七层业务处理;
 	//4)透传或者释放
-
+	
 	struct dpdk_pkt_info* recv_pkt = NULL;
 	int32_t ipv4_recv;
 	while (1)
 	{
 		//1)从驱动收报文;
-		if (0 > dpdk_recv_pkt(threadId, &recv_pkt))
+		if (0 > dpdk_recv_pkt(rx_port_id, rx_port_que_id, &recv_pkt))
+		{
+			usleep(10);
 			continue; //无可用报文
+		}
 		else
-			test_stat[threadId].recv_pkt++;
+			test_stat[thread_id].recv_pkt++;
 
 		//2)调用接口进行匹配;
 		if (IP_FILTER_OK != pkt_ip_match(recv_pkt->pkt_data,recv_pkt->pkt_len,&ipv4_recv,&filter_table))
 		{
 			//未匹配成功的 直接释放
-			dpdk_drop_pkt(threadId, recv_pkt);
-			test_stat[threadId].drop_pkt++;
-			continue;
+			//dpdk_drop_pkt(recv_pkt);
+			//test_stat[thread_id].drop_pkt++;
+			//continue;
 		}
 		else
 		{
-			test_stat[threadId].match_pkt++;
+			test_stat[thread_id].match_pkt++;
 		}
 
 		//3)进行报文的七层业务处理;
 		app_deal_something();
 
 		//4)透传或者释放
-		dpdk_send_pkt(threadId, send_port_id_0, recv_pkt);
-		test_stat[threadId].send_pkt++;
+		if (0 > dpdk_send_pkt(tx_port_id, tx_port_que_id, recv_pkt))
+		{
+			printf("Send Pkt Error!\n");
+		}
+		
+		test_stat[thread_id].send_pkt++;
+
+		usleep(10);
 	}
 
 	return NULL;
@@ -166,13 +172,24 @@ static void* app_handle_thread(void* para)
 
 int init_app_thread()
 {
+	thread_port_info[0].rx_port_id = 0;
+	thread_port_info[0].rx_port_que_id = 0;
+	thread_port_info[0].tx_port_id = 0;
+	thread_port_info[0].tx_port_que_id = 0;
+
+	
+	//thread_port_info[1].rx_port_id = 1;
+	//thread_port_info[1].rx_port_que_id = 0;
+	//thread_port_info[1].tx_port_id = 1;
+	//thread_port_info[1].tx_port_que_id = 0;
+
 	memset(test_stat, 0, sizeof(test_stat));
 	int i;
 	for (i = 0; i < app_thread_cnt; i++)
 	{
-		app_thread_idx[i] = i;
+		thread_port_info[i].thread_id = i;
 		pthread_t threadID;
-		if (0 != pthread_create(&threadID, NULL, app_handle_thread, &app_thread_idx[i]))
+		if (0 != pthread_create(&threadID, NULL, app_handle_thread, &thread_port_info[i]))
 		{
 			printf("Create Thread ID:%d Error!\n", i);
 			return -1;
@@ -229,10 +246,10 @@ void print_stat(void)
 
 int main()
 {
-	if (0 > init_filter())  //初始化ip filter 表
-		return -1;
-
 	if (0 > init_dpdk())    //初始化dpdk
+		return -1;
+	
+	if (0 > init_filter())  //初始化ip filter 表
 		return -1;
 
 	if (0 > init_app_thread())  //打印统计信息
