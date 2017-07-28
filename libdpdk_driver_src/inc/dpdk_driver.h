@@ -147,7 +147,7 @@ void dpdk_get_nic_port_statistics(int port_id, struct dpdk_nic_port_statistics *
 * 输出：    app_thread_stats: 统计值结构体
 * 返回值：  无
 *********************************************************************************/
-//deprec
+//暂未实现
 void dpdk_get_app_thread_statistics(int thread_id, struct dpdk_app_thread_statistics *app_thread_stats);
 
 
