@@ -819,7 +819,7 @@ int dpdk_parse_one_line(char* line, struct dpdk_port_conf* port_conf)
 		rx_core_num++;
 	}
 	
-	while (r_p = strtok(NULL, ","))
+	while (r_p = strtok(NULL, " "))
 	{
 		port_conf->rx_core_arr[rx_core_num] = atoi(r_p);
 		rx_core_num++;	
