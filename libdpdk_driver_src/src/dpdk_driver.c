@@ -573,7 +573,7 @@ static void fwd_main_loop(void)
             	    }
 
 					void* ring = dpdk_port_info[user_port_id].r_ring[que_id];
-                    ret = rte_ring_enqueue_burst(ring, (void **)pkts_info_burst, nb_rx);
+                    ret = rte_ring_enqueue_burst(ring, (void **)pkts_info_burst, nb_rx, NULL);
                     if(unlikely(ret < nb_rx))
                     {
                         cur_pkt_info_burst = pkts_info_burst;
@@ -581,7 +581,7 @@ static void fwd_main_loop(void)
                         {
                             cur_pkt_info_burst = cur_pkt_info_burst + ret;
                             nb_rx = nb_rx- ret;
-                            ret = rte_ring_enqueue_burst(ring, (void **)cur_pkt_info_burst, nb_rx);
+                            ret = rte_ring_enqueue_burst(ring, (void **)cur_pkt_info_burst, nb_rx, NULL);
                         }
                     }
                 }
@@ -597,7 +597,7 @@ static void fwd_main_loop(void)
 			{
 				que_id = pconf->tx_port_info[i].que_array[j];
 				void* ring = dpdk_port_info[user_port_id].t_ring[que_id];
-				nb_tx = rte_ring_dequeue_burst(ring, (void **)pkts_burst, MAX_PKT_BURST);
+				nb_tx = rte_ring_dequeue_burst(ring, (void **)pkts_burst, MAX_PKT_BURST, NULL);
 
 				//for debug
 				//int debug = 0;
@@ -1239,8 +1239,8 @@ void dpdk_print_memory(void)
 			        pmempool->name,
 			        pmempool->size,
 			        pmempool->elt_size,
-			        rte_mempool_count(pmempool),
-			        rte_mempool_free_count(pmempool));
+			        rte_mempool_avail_count(pmempool),
+			        rte_mempool_in_use_count(pmempool));
 
 			pring = dpdk_port_info[i].r_ring[j];
 			if (NULL == pring)
@@ -1251,7 +1251,7 @@ void dpdk_print_memory(void)
 
 			printf("ring[%s]: count %d, used %u\n", 
 			        pring->name,
-			        pring->prod.size,
+			        pring->size,
 			        rte_ring_count(pring));
 		}
 
@@ -1266,7 +1266,7 @@ void dpdk_print_memory(void)
 
 			printf("ring[%s]: count %d, used %u\n", 
 			        pring->name,
-			        pring->prod.size,
+			        pring->size,
 			        rte_ring_count(pring));
 		}
 	}
@@ -1284,8 +1284,8 @@ void dpdk_print_memory(void)
 	        pmempool->name,
 	        pmempool->size,
 	        pmempool->elt_size,
-	        rte_mempool_count(pmempool),
-	        rte_mempool_free_count(pmempool));
+	        rte_mempool_avail_count(pmempool),
+	        rte_mempool_in_use_count(pmempool));
 	printf("==================Memory Stat End====================\n");
 	
 	return;

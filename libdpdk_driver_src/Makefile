@@ -63,8 +63,69 @@ DRV_INSTALL_LIB := /usr/lib64
 
 
 DPDK_LIB += -lpthread -Wl,-rpath,/usr/local/lib \
-            -lrte_eal -lrte_ring -lrte_mbuf -lrte_ethdev -lrte_pmd_ixgbe \
-            -lrte_pmd_e1000 
+            -lrte_pmd_tap \
+            -lrte_ip_frag \
+            -lrte_bitratestats \
+            -lrte_acl \
+            -lrte_port \
+            -lrte_pmd_sfc_efx \
+            -lrte_mbuf \
+            -lrte_pmd_kni \
+            -lrte_pmd_bnxt \
+            -lrte_vhost \
+            -lrte_distributor \
+            -lrte_mempool_stack \
+            -lrte_pmd_af_packet \
+            -lrte_metrics \
+            -lrte_pipeline \
+            -lrte_pmd_skeleton_event \
+            -lrte_pmd_nfp \
+            -lrte_net \
+            -lrte_mempool \
+            -lrte_pmd_ixgbe \
+            -lrte_latencystats \
+            -lrte_pmd_octeontx_ssovf \
+            -lrte_meter \
+            -lrte_pmd_cxgbe \
+            -lrte_power \
+            -lrte_kni \
+            -lrte_pmd_fm10k \
+            -lrte_cfgfile \
+            -lrte_pmd_i40e \
+            -lrte_pmd_null \
+            -lrte_pmd_null_crypto \
+            -lrte_pmd_lio \
+            -lrte_sched \
+            -lrte_pmd_qede \
+            -lrte_table \
+            -lrte_pmd_ena \
+            -lrte_hash \
+            -lrte_pmd_enic \
+            -lrte_eventdev \
+            -lrte_pmd_ring \
+            -lrte_pdump \
+            -lrte_pmd_virtio \
+            -lrte_cryptodev \
+            -lrte_reorder \
+            -lrte_eal \
+            -lrte_pmd_avp \
+            -lrte_pmd_crypto_scheduler \
+            -lrte_pmd_thunderx_nicvf \
+            -lrte_pmd_vhost \
+            -lrte_jobstats \
+            -lrte_pmd_bond \
+            -lrte_mempool_ring \
+            -lrte_cmdline \
+            -lrte_timer \
+            -lrte_efd \
+            -lrte_pmd_vmxnet3_uio \
+            -lrte_ring \
+            -lrte_pmd_ark \
+            -lrte_ethdev \
+            -lrte_lpm \
+            -lrte_pmd_e1000 \
+            -lrte_kvargs \
+            -lrte_pmd_sw_event
 
 .PHONY: all clean install
 all:dpdk_driver
