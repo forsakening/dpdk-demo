@@ -1,3 +1,0 @@
----- rte_mempool_count Matches (2 in 0 files) ----
-Dpdk_driver.c (f:\code\my-git\dpdk-demo\libdpdk_driver_src\src):			        rte_mempool_count(pmempool),
-Dpdk_driver.c (f:\code\my-git\dpdk-demo\libdpdk_driver_src\src):	        rte_mempool_count(pmempool),
