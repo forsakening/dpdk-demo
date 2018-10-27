@@ -1110,7 +1110,7 @@ int dpdk_parse_one_line(char* line, struct dpdk_port_conf* port_conf)
 
 	port_conf->tx_core_num = tx_core_num;
 
-    if (TAP_MODE_NO > tap_mode || TAP_MODE_ALL < tap_mode)
+    if (TAP_MODE_NO > tap_mode || TAP_MODE_MAC < tap_mode)
     {
         printf("Tap Mode:%d Error!\n", tap_mode);
 		return DPDK_R_ERR;        
