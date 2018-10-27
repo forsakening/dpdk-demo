@@ -43,19 +43,14 @@ void print_stats(struct dpdk_init_para *init_para)
         printf("RX-missed : %-12llu Reason:[Fwd Thread Been Scheduled or Enque Nic Que Error Happen]\n", nic_stats.imissed_packets);
 	    printf("TX-packets: %-12llu TX-bytes:  %-12llu TX-errors: %-12llu\n",
 		   nic_stats.tx_packets, nic_stats.tx_bytes, nic_stats.oerrors_packets);
+
+
+
+        printf("TAP rx    : %-12llu rx_drop :  %-12llu \n", nic_stats.tap_rx, nic_stats.tap_rx_drop);
+        printf("TAP tx    : %-12llu tx_drop :  %-12llu \n", nic_stats.tap_tx, nic_stats.tap_tx_drop);
 	}
 
-	printf("\nthread statistics ====================================");
-
-	for (thread_id = 0; thread_id < init_para->thread_num; thread_id++) {
-		printf("\nStatistics for thread %u ------------------------------\n",thread_id);
-		dpdk_get_app_thread_statistics(thread_id, &app_stats);
-
-		printf("rcv-packets: %-12llu snd-packets:  %-12llu drop-packets:  %-12llu\n", 
-		    app_stats.rcv_packets,app_stats.snd_packets,app_stats.drp_packets);
-		printf("get-buffers: %-12llu get-nobufs:  %-12llu\n", app_stats.get_buffers,app_stats.get_nobuf);
-	}
-
+    dpdk_print_memory();
 }
 
 
@@ -70,30 +65,22 @@ void *worker_process(void *arg)
     int bindnum;
 
     CPU_ZERO(&mask);
-    bindnum = thread_id + 4;
+    bindnum = thread_id * 2 + 2;
     CPU_SET(bindnum, &mask);
     if (pthread_setaffinity_np(pthread_self(), sizeof(mask), &mask) < 0) {
         printf("set thread affinity failed\n");
     }	
     while(1)
     {
-        ret = dpdk_recv_pkt(thread_id, &ppkt);
+        ret = dpdk_recv_pkt(0, thread_id, &ppkt);
         if(0 == ret)
         {
-            #if 1
-            if(0 == dpdk_get_sendbuf(thread_id, &ppkt2))
-            {
-                memcpy(ppkt2->pkt_data, ppkt->pkt_data, ppkt->pkt_len);
-                ppkt2->pkt_len = ppkt->pkt_len;
-                dpdk_send_pkt(thread_id,1,ppkt2);
-            }
 
-            #endif
             /*
             *所有从捕包接口取出的报文要么选择发送，要么选择释放，不做
             *处理会导致缓存池耗尽
             */
-            dpdk_send_pkt(thread_id,1,ppkt);
+            dpdk_drop_pkt(ppkt);
         }
     }
     return NULL;
@@ -103,33 +90,10 @@ int main()
 {
     int ret;
     struct dpdk_init_para init_para;
-    init_para.cache_pkt_num = 655360;
-    init_para.thread_num = APP_THREAD_NUM;
-    init_para.core_num = 1;
+    init_para.core_num = 3;
     init_para.port_num = 2;
-    init_para.core_arr[0] = 1;
-    init_para.core_arr[1] = 2;
-    init_para.core_arr[2] = 3;
-    init_para.port_arr[0][0] = 0x00;
-    init_para.port_arr[0][1] = 0x1b;
-    init_para.port_arr[0][2] = 0x21;
-    init_para.port_arr[0][3] = 0x99;
-    init_para.port_arr[0][4] = 0x2b;
-    init_para.port_arr[0][5] = 0xf4;
 
-    init_para.port_arr[1][0] = 0x00;
-    init_para.port_arr[1][1] = 0x1b;
-    init_para.port_arr[1][2] = 0x21;
-    init_para.port_arr[1][3] = 0x99;
-    init_para.port_arr[1][4] = 0x2b;
-    init_para.port_arr[1][5] = 0xf5;
 
-    init_para.port_arr[2][0] = 0xec;
-    init_para.port_arr[2][1] = 0x9e;
-    init_para.port_arr[2][2] = 0xcd;
-    init_para.port_arr[2][3] = 0x1a;
-    init_para.port_arr[2][4] = 0xbb;
-    init_para.port_arr[2][5] = 0x82;
     
     unsigned thread_id;
     time_t t_last,t_now;
@@ -137,7 +101,7 @@ int main()
     pthread_t tid;
     unsigned arg[APP_THREAD_NUM];
         
-    ret = dpdk_nic_init(&init_para);
+    ret = dpdk_nic_init("./nic.conf", &init_para);
     if(0 != ret)
     {
         printf("init error!\n");
@@ -159,7 +123,7 @@ int main()
     {
 
         time(&t_now);
-        if(10 < t_now - t_last)
+        if(1 < t_now - t_last)
         {
             t_last = t_now;
             print_stats(&init_para);

@@ -7,7 +7,16 @@
 #define DPDK_MAX_APP_THREAD_NUM 64     /*上层应用可启用的最大报文处理线程数*/
 #define DPDK_MAX_QUE_NUM  32           /*每个网卡可以使用的最大队列数目*/
 
+#define DPDK_NIC_TAP 1
 
+#ifdef DPDK_NIC_TAP
+typedef enum
+{
+    TAP_MODE_NO  = 0,           /*不使能TAP转发*/
+    TAP_MODE_ALL = 1,           /*所有报文转发至tap口*/
+    TAP_MODE_MAC = 2,           /*只有本网卡及广播mac转发至tap口*/
+}DPDK_TAP_MODE;
+#endif
 #define __dpdk_cache_aligned __attribute__((__aligned__(64)))
 
 
@@ -22,6 +31,12 @@ struct dpdk_nic_port_statistics {
 	uint64_t ierrors_packets;   /*网卡端口接受错误包个数*/
 	uint64_t oerrors_packets;   /*网卡端口发送错误包个数*/
 	uint64_t rx_nombuf;         /*网卡端口报文缓存分配失败次数*/
+#ifdef DPDK_NIC_TAP
+    uint64_t tap_rx;
+    uint64_t tap_rx_drop;
+    uint64_t tap_tx; 
+    uint64_t tap_tx_drop;
+#endif
 } __dpdk_cache_aligned;
 
 
@@ -45,6 +60,9 @@ struct dpdk_init_para{
 
 
 struct dpdk_port_conf{
+#ifdef DPDK_NIC_TAP
+    uint8_t  tap_pkt_mode;                              /*见 DPDK_TAP_MODE */
+#endif
 	uint8_t  mode;									
 	uint8_t  mac_addr[6];								/*端口mac信息*/
 	uint8_t  rx_que_num;								/*端口使用的收队列数目，和其对应的上层应用线程数目相等*/
@@ -57,6 +75,9 @@ struct dpdk_port_conf{
 	void*	 mbuf_pool[DPDK_MAX_QUE_NUM];				/*用于保存其收包内存池*/
 	void*    r_ring[DPDK_MAX_QUE_NUM];					/*用于将收到的报文MBUF指针存在ring中，各个队列一个*/
 	void*    t_ring[DPDK_MAX_QUE_NUM];					/*发包队列*/
+#ifdef DPDK_NIC_TAP
+    void*    tap_ring[DPDK_MAX_QUE_NUM];                /*用于tap的ring*/
+#endif
 }__dpdk_cache_aligned;
 
 /*报文描述信息结构*/

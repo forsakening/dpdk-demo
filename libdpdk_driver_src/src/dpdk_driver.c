@@ -42,6 +42,24 @@
 
 #include "dpdk_driver.h"
 
+#ifdef DPDK_NIC_TAP
+#include <stdio.h>
+#include <stdlib.h>
+#include <stdint.h>
+#include <inttypes.h>
+#include <string.h>
+#include <sys/queue.h>
+#include <stdarg.h>
+#include <errno.h>
+#include <getopt.h>
+#include <netinet/in.h>
+#include <linux/if.h>
+#include <linux/if_tun.h>
+#include <fcntl.h>
+#include <sys/ioctl.h>
+#include <unistd.h>
+#include <signal.h>
+#endif
 
 #define DPDK_R_OK 0
 #define DPDK_R_ERR -1
@@ -134,7 +152,7 @@ static struct rte_eth_conf port_conf = {
 	},
 };
 
-static uint32_t enabled_core_mask = 0;
+static uint64_t enabled_core_mask = 0;
 
 static uint16_t nb_rxd = RTE_TEST_RX_DESC_DEFAULT;
 static uint16_t nb_txd = RTE_TEST_TX_DESC_DEFAULT;
@@ -156,7 +174,15 @@ static struct dpdk_port_conf dpdk_port_info[DPDK_MAX_PORT_NUM] = {{0}};
 
 static void*  mpool_send_buf = NULL;
 
-static uint32_t mpool_send_buf_num = 10000;
+static uint32_t mpool_send_buf_num = 100000;
+static char dpdk_brodcast_mac[6] ={0xff, 0xff, 0xff, 0xff, 0xff, 0xff};
+#ifdef DPDK_NIC_TAP
+static uint64_t dpdk_tap_rx[DPDK_MAX_PORT_NUM] = {0};
+static uint64_t dpdk_tap_tx[DPDK_MAX_PORT_NUM] = {0};
+static uint64_t dpdk_tap_rx_drop[DPDK_MAX_PORT_NUM] = {0};
+static uint64_t dpdk_tap_tx_drop[DPDK_MAX_PORT_NUM] = {0};
+static int dpdk_tap_port_id[DPDK_MAX_PORT_NUM] = {0};
+#endif
 
 ///////////////////////////////////////////////////////////////////////////////////////////////////
 static void check_all_ports_link_status(void);
@@ -172,6 +198,136 @@ static void fwd_main_loop(void);
 static int fwd_launch_one_lcore(__attribute__((unused)) void *dummy);
 
 static void* dpdk_init_thread(void *arg);
+#ifdef DPDK_NIC_TAP
+typedef struct
+{
+    int  port_id;
+    int  tap_fd;
+    char tap_mac[6];
+    char tap_name[32];
+}DPDK_TAP_INFO;
+static DPDK_TAP_INFO dpdk_tap_info[DPDK_MAX_PORT_NUM] = {{0}};
+static int tap_create(int port_id)
+{
+	struct ifreq ifr;
+	int fd, ret;
+	fd = open("/dev/net/tun", O_RDWR);
+	if (fd < 0)
+		return -1;
+    dpdk_tap_info[port_id].port_id = port_id;
+    memcpy(dpdk_tap_info[port_id].tap_mac, dpdk_port_info[port_id].mac_addr, 6);
+    sprintf(dpdk_tap_info[port_id].tap_name, "dpdk%d", port_id);
+	memset(&ifr, 0, sizeof(ifr));
+	ifr.ifr_flags = IFF_TAP | IFF_NO_PI;
+	snprintf(ifr.ifr_name, IFNAMSIZ, "%s", dpdk_tap_info[port_id].tap_name);
+	ret = ioctl(fd, TUNSETIFF, (void *) &ifr);
+	if (ret < 0) {
+		close(fd);
+		return -1;
+	}
+    ifr.ifr_ifru.ifru_hwaddr.sa_family = 1;    
+    ifr.ifr_ifru.ifru_hwaddr.sa_data[0] = dpdk_tap_info[port_id].tap_mac[0];  
+    ifr.ifr_ifru.ifru_hwaddr.sa_data[1] = dpdk_tap_info[port_id].tap_mac[1];  
+    ifr.ifr_ifru.ifru_hwaddr.sa_data[2] = dpdk_tap_info[port_id].tap_mac[2];  
+    ifr.ifr_ifru.ifru_hwaddr.sa_data[3] = dpdk_tap_info[port_id].tap_mac[3];  
+    ifr.ifr_ifru.ifru_hwaddr.sa_data[4] = dpdk_tap_info[port_id].tap_mac[4];  
+    ifr.ifr_ifru.ifru_hwaddr.sa_data[5] = dpdk_tap_info[port_id].tap_mac[5];  
+    ret = ioctl(fd, SIOCSIFHWADDR, (void *) &ifr);
+    if (ret < 0) {
+		close(fd);
+		return -1;
+	}
+    dpdk_tap_info[port_id].tap_fd = fd;
+	return 0;
+}
+static int dpdk_tap_create(void)
+{
+    int i = 0;
+    for (; i < dpdk_init_cfg.port_num; i++)
+    {
+        if (dpdk_port_info[i].tap_pkt_mode == TAP_MODE_NO)
+        {
+            printf("PortID:%d not need to create tap .\n", i);
+            continue;
+        }
+        if (0 != tap_create(i))
+        {
+            printf("PortID:%d create tap Failed \n", i);
+            return -1;
+        }
+        else
+            printf("PortID:%d create tap ok,tap fd:%d name:%s \n", i, dpdk_tap_info[i].tap_fd, dpdk_tap_info[i].tap_name);
+    }
+    return 0;
+}
+static void* dpdk_tap_rx_thread(void *arg)
+{   
+    printf("Entering Thread %s ...\n" ,__FUNCTION__);
+    int i,j,ret,tap_fd;
+    struct rte_mbuf* m = NULL;
+    struct dpdk_pkt_info *ppkt = NULL;
+    int tx_que_num = 0;
+    while (1)
+    {
+        for (i = 0; i < dpdk_init_cfg.port_num; i++)
+        {  
+            tap_fd = dpdk_tap_info[i].tap_fd;
+            for (j = 0; j < dpdk_port_info[i].rx_que_num; j++)
+            {
+                if (0 == rte_ring_sc_dequeue(dpdk_port_info[i].tap_ring[j], (void**)(&m)))
+                {
+    				ret = write(tap_fd, rte_pktmbuf_mtod(m, void*), rte_pktmbuf_data_len(m));
+    				rte_pktmbuf_free(m);
+    				if (unlikely(ret < 0))
+    					dpdk_tap_rx_drop[i]++;
+    				else
+    					dpdk_tap_rx[i]++;
+                }
+                else
+                    usleep(1);
+            }
+        }
+    }
+}
+static void* dpdk_tap_tx_thread(void *arg)
+{   
+    int ret,tap_fd, tx_que_num;
+    struct rte_mbuf* m = NULL;
+    struct dpdk_pkt_info *ppkt = NULL;
+    int port_id = *((int*)arg);
+    printf("Entering Thread %s, portid:%d ...\n" ,__FUNCTION__, port_id);
+    tap_fd = dpdk_tap_info[port_id].tap_fd;
+    tx_que_num = dpdk_port_info[port_id].tx_que_num;
+    while (1)
+    {
+        if (DPDK_R_OK != dpdk_get_sendbuf(&ppkt))
+        {
+            dpdk_tap_tx_drop[port_id]++;
+            sleep(1);
+            continue;
+        }
+        m = ppkt->pmbuf;
+        ret = read(tap_fd, rte_pktmbuf_mtod(m, void *), DPDK_ETHER_LEN);
+        if (unlikely(ret < 0)) {
+            dpdk_tap_tx_drop[port_id]++;
+            dpdk_drop_pkt(ppkt);
+            sleep(1);
+			continue;
+		}
+        m->nb_segs = 1;
+		m->next = NULL;
+		m->pkt_len = (uint16_t)ret;
+		m->data_len = (uint16_t)ret;
+		ret = rte_eth_tx_burst(port_id, tx_que_num, &m, 1);
+		if (unlikely(ret < 1)) {
+			rte_pktmbuf_free(m);
+			dpdk_tap_tx_drop[port_id]++;
+		}
+		else 
+			dpdk_tap_tx[port_id]++;
+    }
+}
+#endif
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
@@ -248,9 +404,10 @@ static int dpdk_env_setup(void)
     for(i = 0; i < dpdk_init_cfg.core_num; i++)
     {
 		dpdk_core_id = dpdk_init_cfg.core_arr[i];
-	    enabled_core_mask |= 1 << dpdk_core_id;        
+	    enabled_core_mask |=  (((uint64_t)1) << dpdk_core_id);
+		printf("Get a coreid:%d , current mask:%llx \n", dpdk_core_id, enabled_core_mask);        
     }
-    snprintf(core_mask_str, 64, "0x%x", enabled_core_mask);
+    snprintf(core_mask_str, 64, "0x%llx", enabled_core_mask);
     printf("init core mask:%s\n",core_mask_str);
 
     /*
@@ -359,6 +516,17 @@ static int dpdk_core_setup(void)
 				printf("Cannot init ring:%s,size:%u\n", recv_ring_name, ring_size);
 				return DPDK_R_ERR;
 			}
+        #ifdef DPDK_NIC_TAP
+            char tap_ring_name[64] = {0};
+            uint32_t tap_ring_size = 4096;
+			snprintf(tap_ring_name, 64, "tap_port%d_que%d",i, j);
+			dpdk_port_info[i].tap_ring[j] = rte_ring_create(tap_ring_name, tap_ring_size, SOCKET_ID_ANY, 0);
+			if (NULL == dpdk_port_info[i].tap_ring[j])
+			{
+				printf("Cannot init ring:%s,size:%u\n", tap_ring_name, tap_ring_size);
+				return DPDK_R_ERR;
+			}
+        #endif
 		}
 
 		//tx
@@ -419,6 +587,9 @@ static int dpdk_port_setup(void)
 		rx_que_num = dpdk_port_info[user_port_id].rx_que_num;
 		tx_que_num = dpdk_port_info[user_port_id].tx_que_num;
 		
+    #ifdef DPDK_NIC_TAP
+        tx_que_num += 1;
+    #endif
         ret = rte_eth_dev_configure(dpdk_port_id, rx_que_num, tx_que_num, &port_conf);
         if (ret < 0)
         {
@@ -518,7 +689,7 @@ static void fwd_main_loop(void)
     uint8_t dpdk_port_id = 0;
     uint8_t user_port_id = 0;
     uint16_t ret = 0;
-    uint16_t nb_rx = 0;
+    uint16_t nb_real, nb_rx = 0;
 	uint16_t nb_tx = 0;
     struct timeval tv = {0};
 	struct lcore_port_conf *pconf = NULL;
@@ -561,6 +732,44 @@ static void fwd_main_loop(void)
 				nb_rx = rte_eth_rx_burst(dpdk_port_id, que_id, pkts_burst, MAX_PKT_BURST);
                 if(0 < nb_rx)
                 {
+                #ifdef DPDK_NIC_TAP
+                    if (dpdk_port_info[user_port_id].tap_pkt_mode == TAP_MODE_ALL)
+                    {
+                        nb_real = rte_ring_mp_enqueue_burst(dpdk_port_info[user_port_id].tap_ring[que_id], 
+                                                            (void **)pkts_burst, nb_rx, NULL);
+                        if (unlikely(nb_real < nb_rx))
+                        {
+                            for (k = nb_real; k < nb_rx; k++)
+                                rte_pktmbuf_free(pkts_burst[k]);
+                        }
+                        continue;
+                    }
+                    else if (dpdk_port_info[user_port_id].tap_pkt_mode == TAP_MODE_MAC)
+                    {
+                        struct rte_mbuf *tmp_pkts_burst[MAX_PKT_BURST];
+                        uint16_t tmp_nb_rx = nb_rx;
+                        uint16_t non_tap_cnt = 0;
+                        rte_memcpy(&tmp_pkts_burst, &pkts_burst, nb_rx * sizeof(pkts_burst[0]));
+                        for (k = 0; k < tmp_nb_rx; k++)
+                        {
+                            char *dst_mac = rte_pktmbuf_mtod((struct rte_mbuf*)tmp_pkts_burst[k], uint8_t *);
+                            if ((0 == memcmp(dst_mac, dpdk_port_info[user_port_id].mac_addr, 6)) || 
+                                (0 == memcmp(dst_mac, dpdk_brodcast_mac, 6)))
+                            {
+                                if( 0 != rte_ring_mp_enqueue(dpdk_port_info[user_port_id].tap_ring[que_id], tmp_pkts_burst[k]))
+                                    rte_pktmbuf_free(tmp_pkts_burst[k]);
+                                nb_rx--;
+                                continue;
+                            }
+                            else
+                            {
+                                pkts_burst[non_tap_cnt++] = tmp_pkts_burst[k];
+                            }
+                        }
+                        if (0 >= nb_rx)
+                            continue;
+                    }
+                #endif
             		for (k = 0; k < nb_rx; k++) 
             		{
             			pkt_info.pmbuf      = pkts_burst[k];
@@ -646,6 +855,29 @@ static void* dpdk_init_thread(void *arg)
         goto error_process ;
     }
 
+#ifdef DPDK_NIC_TAP
+    if (0 != dpdk_tap_create())
+    {
+        printf("TAP Create Module Error!\n");
+        goto error_process ;
+    }
+    pthread_t thread_id;
+    if(DPDK_R_OK != pthread_create(&thread_id, NULL, dpdk_tap_rx_thread, NULL))
+    {
+        printf("Create dpdk_tap_rx_thread Error!\n");
+        goto error_process ;
+    }
+    int i = 0;
+    for (; i < dpdk_init_cfg.port_num; i++)
+    {
+        dpdk_tap_port_id[i] = i;
+        if(DPDK_R_OK != pthread_create(&thread_id, NULL, dpdk_tap_tx_thread, &dpdk_tap_port_id[i]))
+        {
+            printf("Create dpdk_tap_tx_thread %d Error!\n", i);
+            goto error_process ;
+        }
+    }
+#endif
     dpdk_init_res_flag = DPDK_INIT_OK;
     
 	rte_eal_mp_remote_launch(fwd_launch_one_lcore, NULL, CALL_MASTER);
@@ -672,6 +904,7 @@ int dpdk_parse_one_line(char* line, struct dpdk_port_conf* port_conf)
 	int  cache_num = 0;
 	char rx_core_arr[64] = {0};
 	char tx_core_arr[64] = {0};
+    int  tap_mode = 0;
 
 	int split_num = 0;
 	char *split = NULL;
@@ -713,6 +946,10 @@ int dpdk_parse_one_line(char* line, struct dpdk_port_conf* port_conf)
 		else if (7 == split_num)
 		{
 			memcpy(tx_core_arr, split, strlen(split));
+		}
+        else if (8 == split_num)
+        {
+            tap_mode = atoi(split);
 		}
 	}
 	
@@ -873,6 +1110,24 @@ int dpdk_parse_one_line(char* line, struct dpdk_port_conf* port_conf)
 
 	port_conf->tx_core_num = tx_core_num;
 
+    if (TAP_MODE_NO > tap_mode || TAP_MODE_ALL < tap_mode)
+    {
+        printf("Tap Mode:%d Error!\n", tap_mode);
+		return DPDK_R_ERR;        
+    }
+    if (TAP_MODE_NO == tap_mode)
+    {
+        port_conf->tap_pkt_mode = tap_mode;
+    }
+    else
+    {
+        if (mode != RX_ONLY && mode != RT_BOTH)
+        {
+            printf("Tap Mode Enable, port mode [%d] must include rx mode!\n", mode);
+            return DPDK_R_ERR;
+        }
+        port_conf->tap_pkt_mode = tap_mode;
+    }
 	return DPDK_R_OK;
 }
 
@@ -1003,6 +1258,7 @@ int dpdk_init_config(const char* file_path)
 		printf("    TxQueNum:%d \n", dpdk_port_info[i].tx_que_num);
 		printf("    RxCacheNum:%d \n", dpdk_port_info[i].cache_pkt_num);
 		printf("    RXCoreNum:%d \n", dpdk_port_info[i].rx_core_num);
+        printf("    TapMode:%d \n", dpdk_port_info[i].tap_pkt_mode);
 		for (j = 0; j < dpdk_port_info[i].rx_core_num; j++)
 		{
 			printf("        CoreID:%d \n", dpdk_port_info[i].rx_core_arr[j]);
@@ -1075,6 +1331,7 @@ int dpdk_nic_init(const char* file_path, struct dpdk_init_para* init_para)
 
     }
 
+    return DPDK_R_OK;
     if(DPDK_INIT_OK == dpdk_init_res_flag)
     {
     	memcpy(init_para, &dpdk_init_cfg, sizeof(dpdk_init_cfg));
@@ -1089,7 +1346,7 @@ int dpdk_recv_pkt(int port_id, int que_id,  struct dpdk_pkt_info **recv_pkt)
 {
     if(dpdk_port_info[port_id].rx_que_num <= que_id || NULL == recv_pkt)
     {
-        printf("func %-20s input para illegal!\n", __FUNCTION__);
+        printf("func %-20s input para illegal, que_id:%d, recv_pkt:%p!\n", __FUNCTION__, que_id, recv_pkt);
         return DPDK_R_ERR;
     }
 
@@ -1105,7 +1362,7 @@ int dpdk_send_pkt(int port_id, int que_id, struct dpdk_pkt_info *send_pkt)
 {
     if(dpdk_port_info[port_id].tx_que_num <= que_id || NULL == send_pkt)
     {
-        printf("func %-20s input para illegal!\n", __FUNCTION__);
+        printf("func %-20s input para illegal, que_id:%d, recv_pkt:%p!\n", __FUNCTION__, que_id, send_pkt);
         return;
     }
 
@@ -1205,6 +1462,12 @@ void dpdk_get_nic_port_statistics(int port_id, struct dpdk_nic_port_statistics *
     nic_port_stats->oerrors_packets = stats.oerrors;
     nic_port_stats->rx_nombuf = stats.rx_nombuf;    
 
+#ifdef DPDK_NIC_TAP
+    nic_port_stats->tap_rx = dpdk_tap_rx[port_id];
+    nic_port_stats->tap_tx = dpdk_tap_tx[port_id];
+    nic_port_stats->tap_rx_drop = dpdk_tap_rx_drop[port_id];
+    nic_port_stats->tap_tx_drop = dpdk_tap_tx_drop[port_id];
+#endif
 	return;
 }
 
@@ -1253,6 +1516,18 @@ void dpdk_print_memory(void)
 			        pring->name,
 			        pring->size,
 			        rte_ring_count(pring));
+        #ifdef DPDK_NIC_TAP
+            pring = dpdk_port_info[i].tap_ring[j];
+			if (NULL == pring)
+			{
+				printf("[ERROR]PortID:%d-QueID:%d has no tap_ring poniter!\n", i, j);
+				continue;
+			}
+			printf("ring[%s]: count %d, used %u\n", 
+			        pring->name,
+			        pring->size,
+			        rte_ring_count(pring));
+        #endif
 		}
 
 		for (j = 0; j < dpdk_port_info[i].tx_que_num; j++)
